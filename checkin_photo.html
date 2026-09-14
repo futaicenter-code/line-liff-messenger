@@ -205,6 +205,10 @@ async function loadInitData(){
     sel.value = selectedMessenger;
   }
 
+  renderCustomerNamesList();
+}
+
+function renderCustomerNamesList(){
   const dl = document.getElementById('customerNamesList');
   dl.innerHTML = Object.keys(customerDirectory).map(n=>`<option value="${escapeHtml(n)}">`).join('');
 }
@@ -367,7 +371,11 @@ async function submitCheckin(){
     if(!data || data.ok !== true){
       throw new Error((data && data.error) || 'เซิร์ฟเวอร์ตอบ error โดยไม่ทราบสาเหตุ');
     }
-    if(currentEntry.addr && !customerDirectory[currentEntry.name]) customerDirectory[currentEntry.name] = [currentEntry.addr];
+    if(!customerDirectory[currentEntry.name]) customerDirectory[currentEntry.name] = [];
+    if(currentEntry.addr && !customerDirectory[currentEntry.name].includes(currentEntry.addr)){
+      customerDirectory[currentEntry.name].push(currentEntry.addr);
+    }
+    renderCustomerNamesList();
     recentSubmissions.unshift({ name: currentEntry.name, time: nowStr });
     renderRecentList();
     document.getElementById('successLine').textContent = currentEntry.name + ' — ' + nowStr;
