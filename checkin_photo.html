@@ -90,6 +90,7 @@
     <select id="messengerSelect" onchange="onMessengerChange(this.value)">
       <option value="">— เลือกชื่อ —</option>
     </select>
+    <div class="geoLine ok" id="messengerAutoLine" style="display:none;">🔗 จำชื่อนี้ไว้กับ LINE ของคุณแล้ว — เปิดครั้งหน้าเลือกให้อัตโนมัติ</div>
   </div>
 
   <div class="card" id="entrySection" style="display:none;">
@@ -108,6 +109,10 @@
     <div class="stepLabel">ขั้นที่ 3 — ถ่ายรูปหลักฐาน</div>
     <div id="selectedEntryLine" style="font-size:13px;font-weight:600;margin-bottom:6px;"></div>
     <div class="geoLine" id="geoLine">📍 กำลังระบุตำแหน่ง...</div>
+    <div id="mapPreviewWrap" style="display:none;margin-top:8px;">
+      <iframe id="mapPreview" style="width:100%;height:160px;border:1px solid var(--line);border-radius:8px;" loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>
+      <div style="font-size:11px;color:var(--slate);margin-top:4px;">ตำแหน่งไม่ตรง? กด "ลองระบุตำแหน่งอีกครั้ง" ด้านล่าง</div>
+    </div>
     <button class="btn primary" id="retryGeoBtn" style="display:none;margin-top:8px;" onclick="requestGeo()">📍 ลองระบุตำแหน่งอีกครั้ง</button>
 
     <button class="btn primary" id="cameraBtn" style="margin-top:12px;" onclick="document.getElementById('photoInput').click()" disabled>
@@ -128,6 +133,7 @@
       <div class="check">✅</div>
       <div style="font-weight:600;margin:8px 0 4px 0;">ส่งเช็คอินสำเร็จ</div>
       <div style="font-size:12.5px;color:var(--slate);margin-bottom:14px;" id="successLine"></div>
+      <div style="font-size:11.5px;color:var(--slate);margin-bottom:10px;display:none;" id="autoCloseLine"></div>
       <button class="btn primary" onclick="resetForNextEntry()">📷 ถ่ายรูปจุดต่อไป</button>
     </div>
   </div>
@@ -160,6 +166,9 @@ let currentEntry = null; // { name, addr, note }
 let recentSubmissions = []; // this-session log, just for the driver's own reference
 let capturedPhotoDataUrl = null;
 let capturedGeo = null;
+let liffUserId = '';      // ได้จาก liff.getProfile() ถ้าเปิดจากในแอป LINE — ใช้จำว่าใครคือใคร ไม่ต้องเลือกชื่อซ้ำ
+let liffDisplayName = '';
+let autoCloseTimer = null;
 const todayStr = new Date().toISOString().slice(0,10);
 
 /* ---------- ตรวจ context ที่ GPS/กล้องจะถูกบล็อก ---------- */
@@ -191,17 +200,26 @@ function saveGasUrl(){
 
 /* ---------- โหลดรายชื่อแมส + คำแนะนำลูกค้า ---------- */
 async function loadInitData(){
+  let matchedMessenger = null;
   try{
-    const res = await fetch(buildActionUrl('init'));
+    let url = buildActionUrl('init');
+    if(liffUserId) url += '&lineUserId=' + encodeURIComponent(liffUserId);
+    const res = await fetch(url);
     const data = await res.json();
     if(Array.isArray(data.messengers)) MESSENGERS = data.messengers;
     if(data.customers && typeof data.customers === 'object') customerDirectory = data.customers;
+    if(data.matchedMessenger) matchedMessenger = data.matchedMessenger;
   }catch(e){ console.error('load init data failed', e); }
 
   const sel = document.getElementById('messengerSelect');
   sel.innerHTML = '<option value="">— เลือกชื่อ —</option>' +
     MESSENGERS.map(m=>`<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join('');
-  if(selectedMessenger && MESSENGERS.includes(selectedMessenger)){
+
+  // ลำดับความสำคัญ: จำได้จากบัญชี LINE (ข้ามการเลือกเอง) > เคยเลือกไว้ในเครื่องนี้ > ไม่มีอะไรเลือกไว้
+  if(matchedMessenger && MESSENGERS.includes(matchedMessenger)){
+    sel.value = matchedMessenger;
+    onMessengerChange(matchedMessenger, /*fromAutoMatch=*/true);
+  } else if(selectedMessenger && MESSENGERS.includes(selectedMessenger)){
     sel.value = selectedMessenger;
   }
 
@@ -213,10 +231,25 @@ function renderCustomerNamesList(){
   dl.innerHTML = Object.keys(customerDirectory).map(n=>`<option value="${escapeHtml(n)}">`).join('');
 }
 
-function onMessengerChange(name){
+function onMessengerChange(name, fromAutoMatch){
   selectedMessenger = name;
   try{ localStorage.setItem('futai_photoCheckin_messenger', name); }catch(e){}
   document.getElementById('entrySection').style.display = name ? 'block' : 'none';
+
+  const autoLine = document.getElementById('messengerAutoLine');
+  if(fromAutoMatch){
+    autoLine.style.display = 'block'; // จำได้จากบัญชี LINE อยู่แล้ว ไม่ต้องผูกซ้ำ
+  } else {
+    autoLine.style.display = 'none';
+    // เลือกชื่อเองครั้งนี้ (ไม่ใช่จำมาอัตโนมัติ) — ถ้ามีบัญชี LINE ให้จำไว้เงียบ ๆ สำหรับครั้งหน้า
+    if(name && liffUserId){
+      fetch(sheetWebAppUrl, {
+        method: 'POST',
+        headers: {'Content-Type':'text/plain;charset=utf-8'},
+        body: JSON.stringify({ action: 'linkMessenger', name, lineUserId: liffUserId })
+      }).then(()=>{ autoLine.style.display = 'block'; }).catch(e=>console.error('linkMessenger failed', e));
+    }
+  }
 }
 
 /* เติมที่อยู่อัตโนมัติถ้าพิมพ์ชื่อตรงกับที่เคยบันทึกไว้แล้ว (มีที่อยู่เดียว) */
@@ -268,12 +301,19 @@ function requestGeo(){
   geoLine.className = "geoLine";
   document.getElementById('retryGeoBtn').style.display = 'none';
   document.getElementById('cameraBtn').disabled = true;
+  document.getElementById('mapPreviewWrap').style.display = 'none';
 
   navigator.geolocation.getCurrentPosition(pos=>{
     capturedGeo = { lat: pos.coords.latitude, lng: pos.coords.longitude };
     geoLine.textContent = `📍 บันทึกตำแหน่งแล้ว (${capturedGeo.lat.toFixed(5)}, ${capturedGeo.lng.toFixed(5)})`;
     geoLine.className = "geoLine ok";
     document.getElementById('cameraBtn').disabled = false;
+
+    // แผนที่ยืนยันตำแหน่ง (คล้ายตอนแชร์โลเคชั่นในแชท LINE) — ให้เห็นหมุดจริงก่อนถ่ายรูป ไม่ใช่แค่ตัวเลขพิกัด
+    const mapWrap = document.getElementById('mapPreviewWrap');
+    const mapFrame = document.getElementById('mapPreview');
+    mapFrame.src = `https://maps.google.com/maps?q=${capturedGeo.lat},${capturedGeo.lng}&z=16&output=embed`;
+    mapWrap.style.display = 'block';
   }, err=>{
     const reasons = {
       1: "แอปนี้ไม่ได้รับอนุญาตให้เข้าถึงตำแหน่ง — เช็คสิทธิ์ตำแหน่งของแอป LINE (หรือเบราว์เซอร์) ใน Settings",
@@ -383,6 +423,37 @@ async function submitCheckin(){
     document.getElementById('submitSection').style.display = 'none';
     document.getElementById('successSection').style.display = 'block';
     document.getElementById('successSection').scrollIntoView({behavior:'smooth', block:'start'});
+
+    // ส่งสรุป+รูปกลับเข้าแชทที่เปิดหน้านี้มาโดยตรง (ถ้าเปิดจากในแชท/กลุ่มจริง ๆ ผ่าน LIFF) — เสริมจาก
+    // การสรุปเข้ากลุ่มตามรอบ digest/instant ปกติ ไม่ใช่การแทนที่ ถ้าใช้ไม่ได้ (เช่นเปิดจากริชเมนู ไม่ใช่จากแชท)
+    // ก็แค่ข้ามไปเงียบ ๆ ไม่กระทบการเช็คอินที่สำเร็จไปแล้ว
+    try{
+      if(typeof liff !== 'undefined' && liff.isInClient() && liff.isApiAvailable && liff.isApiAvailable('sendMessages')){
+        const messages = [{ type:'text', text: `📸 เช็คอิน: ${currentEntry.name}${currentEntry.addr ? ' — ' + currentEntry.addr : ''}\n🙋 ${selectedMessenger}\n🕒 ${nowStr}` }];
+        if(data.photoDirectUrl){
+          messages.push({ type:'image', originalContentUrl: data.photoDirectUrl, previewImageUrl: data.photoDirectUrl });
+        }
+        await liff.sendMessages(messages);
+      }
+    }catch(sendErr){ console.error('liff.sendMessages failed (ไม่กระทบการเช็คอินที่สำเร็จแล้ว)', sendErr); }
+
+    // ปิดหน้าต่างอัตโนมัติถ้าเปิดจากในแอป LINE — เผื่อเวลาให้กดปุ่ม "ถ่ายรูปจุดต่อไป" ทันเพื่อยกเลิกได้
+    if(typeof liff !== 'undefined' && liff.isInClient()){
+      const closeLine = document.getElementById('autoCloseLine');
+      let secondsLeft = 3;
+      closeLine.style.display = 'block';
+      closeLine.textContent = `หน้านี้จะปิดอัตโนมัติใน ${secondsLeft} วิ... (กด "ถ่ายรูปจุดต่อไป" เพื่ออยู่ต่อ)`;
+      autoCloseTimer = setInterval(()=>{
+        secondsLeft -= 1;
+        if(secondsLeft <= 0){
+          clearInterval(autoCloseTimer);
+          autoCloseTimer = null;
+          try{ liff.closeWindow(); }catch(e){}
+        } else {
+          closeLine.textContent = `หน้านี้จะปิดอัตโนมัติใน ${secondsLeft} วิ... (กด "ถ่ายรูปจุดต่อไป" เพื่ออยู่ต่อ)`;
+        }
+      }, 1000);
+    }
   }catch(e){
     statusEl.textContent = '❌ ส่งไม่สำเร็จ กรุณาลองอีกครั้ง (' + e.message + ')';
     statusEl.className = 'statusMsg err';
@@ -399,6 +470,8 @@ function renderRecentList(){
 }
 
 function resetForNextEntry(){
+  if(autoCloseTimer){ clearInterval(autoCloseTimer); autoCloseTimer = null; }
+  document.getElementById('autoCloseLine').style.display = 'none';
   currentEntry = null;
   capturedPhotoDataUrl = null;
   capturedGeo = null;
@@ -421,8 +494,15 @@ function escapeHtml(str){
   document.getElementById('insecureBanner').classList.toggle('show', check.blocked);
 
   if(LIFF_ID && typeof liff !== 'undefined'){
-    try{ await liff.init({ liffId: LIFF_ID }); }
-    catch(e){ console.error('liff.init failed (ไม่กระทบการใช้งานหน้านี้)', e); }
+    try{
+      await liff.init({ liffId: LIFF_ID });
+      if(liff.isLoggedIn()){
+        const profile = await liff.getProfile();
+        liffUserId = profile.userId || '';
+        liffDisplayName = profile.displayName || '';
+      }
+    }
+    catch(e){ console.error('liff.init/getProfile failed (ไม่กระทบการใช้งานหน้านี้ — แค่จะไม่จำชื่อให้อัตโนมัติ)', e); }
   }
 
   sheetWebAppUrl = HARDCODED_GAS_URL || localStorage.getItem('futai_photoCheckin_gasUrl') || '';
