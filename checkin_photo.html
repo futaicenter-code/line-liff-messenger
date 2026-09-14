@@ -63,6 +63,14 @@
 
   .recentList{display:flex;flex-direction:column;gap:6px;margin-top:6px;}
   .recentItem{font-size:12px;color:var(--slate);border-left:3px solid var(--teal);padding:4px 8px;background:var(--teal-soft);border-radius:4px;}
+
+  .acWrap{position:relative;}
+  .acList{position:absolute;left:0;right:0;top:calc(100% + 2px);background:#fff;border:1px solid var(--line);border-radius:8px;max-height:220px;overflow-y:auto;z-index:30;box-shadow:0 6px 16px rgba(27,36,48,0.12);display:none;}
+  .acList.show{display:block;}
+  .acItem{padding:10px 12px;font-size:13.5px;cursor:pointer;border-bottom:1px solid var(--line);}
+  .acItem:last-child{border-bottom:none;}
+  .acItem:active,.acItem.hover{background:var(--amber-soft);}
+  .acEmpty{padding:10px 12px;font-size:12.5px;color:var(--slate);}
 </style>
 </head>
 <body>
@@ -96,10 +104,13 @@
   <div class="card" id="entrySection" style="display:none;">
     <div class="stepLabel">ขั้นที่ 2 — ลูกค้า/จุดงานนี้คือใคร</div>
     <label class="fieldLabel">ชื่อลูกค้า/ร้าน</label>
-    <input class="input" id="customerNameInput" list="customerNamesList" placeholder="พิมพ์หรือเลือกจากที่เคยบันทึกไว้" oninput="onCustomerNameInput()">
-    <datalist id="customerNamesList"></datalist>
+    <div class="acWrap">
+      <input class="input" id="customerNameInput" autocomplete="off" placeholder="พิมพ์หรือเลือกจากที่เคยบันทึกไว้"
+        oninput="onCustomerNameInput()" onfocus="onCustomerNameInput()">
+      <div class="acList" id="customerSuggestions"></div>
+    </div>
     <label class="fieldLabel">ที่อยู่ (ถ้ามี)</label>
-    <input class="input" id="customerAddrInput" placeholder="ที่อยู่ (เติมอัตโนมัติถ้าเคยบันทึกไว้)">
+    <input class="input" id="customerAddrInput" placeholder="ที่อยู่ (เติมอัตโนมัติถ้าเคยบันทึกไว้)" oninput="onCustomerAddrInput()">
     <label class="fieldLabel">รายละเอียดงาน (ถ้ามี)</label>
     <input class="input" id="customerNoteInput" placeholder="เช่น ส่งของ / วางบิล / รับเช็ค">
     <button class="btn primary" style="margin-top:12px;" onclick="proceedToCapture()">ถัดไป — ถ่ายรูป</button>
@@ -169,6 +180,7 @@ let capturedGeo = null;
 let liffUserId = '';      // ได้จาก liff.getProfile() ถ้าเปิดจากในแอป LINE — ใช้จำว่าใครคือใคร ไม่ต้องเลือกชื่อซ้ำ
 let liffDisplayName = '';
 let autoCloseTimer = null;
+let addrWasAutofilled = false; // กันไม่ให้ที่อยู่ของชื่อเก่าค้างอยู่ตอนเปลี่ยนไปพิมพ์ชื่อใหม่ที่ยังไม่มีที่อยู่บันทึกไว้
 const todayStr = new Date().toISOString().slice(0,10);
 
 /* ---------- ตรวจ context ที่ GPS/กล้องจะถูกบล็อก ---------- */
@@ -216,22 +228,51 @@ async function loadInitData(){
     MESSENGERS.map(m=>`<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join('');
 
   // ลำดับความสำคัญ: จำได้จากบัญชี LINE (ข้ามการเลือกเอง) > เคยเลือกไว้ในเครื่องนี้ > ไม่มีอะไรเลือกไว้
+  // สำคัญ: ต้องเรียก onMessengerChange() เสมอตอน pre-select ไม่ใช่แค่ตั้ง sel.value เฉย ๆ — ไม่งั้นขั้นที่ 2
+  // (entrySection) จะไม่โผล่ให้ ทั้งที่ดรอปดาวน์ขึ้นชื่อไว้ให้แล้ว (บั๊กที่เจอ 2026-09-14)
   if(matchedMessenger && MESSENGERS.includes(matchedMessenger)){
     sel.value = matchedMessenger;
     onMessengerChange(matchedMessenger, /*fromAutoMatch=*/true);
   } else if(selectedMessenger && MESSENGERS.includes(selectedMessenger)){
     sel.value = selectedMessenger;
+    onMessengerChange(selectedMessenger, /*fromAutoMatch=*/false, /*silent=*/true);
   }
-
-  renderCustomerNamesList();
 }
 
-function renderCustomerNamesList(){
-  const dl = document.getElementById('customerNamesList');
-  dl.innerHTML = Object.keys(customerDirectory).map(n=>`<option value="${escapeHtml(n)}">`).join('');
+/* ---------- ช่องแนะนำชื่อลูกค้า (dropdown เอง แทน <datalist> — บนมือถือ/ในแอป LINE
+   <datalist> จะโผล่เป็นแถบเหนือคีย์บอร์ดแทนที่จะเป็นลิสต์ใต้ช่อง ใช้ยากมากถ้ามีชื่อลูกค้าเป็นพัน ๆ ชื่อ) ---------- */
+function renderCustomerSuggestions(query){
+  const box = document.getElementById('customerSuggestions');
+  const names = Object.keys(customerDirectory);
+  const q = query.trim().toLowerCase();
+  const matches = (q ? names.filter(n => n.toLowerCase().includes(q)) : names).slice(0, 30);
+
+  if(matches.length === 0){
+    box.innerHTML = q ? '<div class="acEmpty">ไม่พบชื่อที่ตรงกัน — พิมพ์เป็นชื่อใหม่ได้เลย</div>' : '';
+    box.classList.toggle('show', !!q);
+    return;
+  }
+  // ใช้ data-name + event delegation แทน onclick inline — กันปัญหาชื่อลูกค้าที่มีเครื่องหมายคำพูด/อักขระพิเศษ
+  // ทำให้ HTML attribute พัง
+  box.innerHTML = matches.map(n=>`<div class="acItem" data-name="${escapeHtml(n)}">${escapeHtml(n)}</div>`).join('');
+  box.classList.add('show');
 }
 
-function onMessengerChange(name, fromAutoMatch){
+document.getElementById('customerSuggestions').addEventListener('click', function(e){
+  const item = e.target.closest('.acItem[data-name]');
+  if(!item) return;
+  const name = item.getAttribute('data-name');
+  const input = document.getElementById('customerNameInput');
+  input.value = name;
+  document.getElementById('customerSuggestions').classList.remove('show');
+  applyCustomerAddressForName(name);
+});
+
+document.addEventListener('click', function(e){
+  if(!e.target.closest('.acWrap')) document.getElementById('customerSuggestions').classList.remove('show');
+});
+
+function onMessengerChange(name, fromAutoMatch, silent){
   selectedMessenger = name;
   try{ localStorage.setItem('futai_photoCheckin_messenger', name); }catch(e){}
   document.getElementById('entrySection').style.display = name ? 'block' : 'none';
@@ -239,9 +280,11 @@ function onMessengerChange(name, fromAutoMatch){
   const autoLine = document.getElementById('messengerAutoLine');
   if(fromAutoMatch){
     autoLine.style.display = 'block'; // จำได้จากบัญชี LINE อยู่แล้ว ไม่ต้องผูกซ้ำ
+  } else if(silent){
+    autoLine.style.display = 'none'; // แค่กู้ค่าที่เคยเลือกไว้ในเครื่องนี้กลับมาตอนเปิดหน้า ไม่ใช่การเลือกใหม่ — ไม่ต้องยิง linkMessenger ซ้ำ
   } else {
     autoLine.style.display = 'none';
-    // เลือกชื่อเองครั้งนี้ (ไม่ใช่จำมาอัตโนมัติ) — ถ้ามีบัญชี LINE ให้จำไว้เงียบ ๆ สำหรับครั้งหน้า
+    // เลือกชื่อเองครั้งนี้ (ไม่ใช่จำมาอัตโนมัติ/กู้ค่าเดิม) — ถ้ามีบัญชี LINE ให้จำไว้เงียบ ๆ สำหรับครั้งหน้า
     if(name && liffUserId){
       fetch(sheetWebAppUrl, {
         method: 'POST',
@@ -252,13 +295,31 @@ function onMessengerChange(name, fromAutoMatch){
   }
 }
 
-/* เติมที่อยู่อัตโนมัติถ้าพิมพ์ชื่อตรงกับที่เคยบันทึกไว้แล้ว (มีที่อยู่เดียว) */
+/* พิมพ์ชื่อลูกค้า: โชว์กล่องแนะนำ + เติม/ล้างที่อยู่อัตโนมัติให้ตรงกับชื่อปัจจุบันเสมอ */
 function onCustomerNameInput(){
-  const name = document.getElementById('customerNameInput').value.trim();
+  const name = document.getElementById('customerNameInput').value;
+  renderCustomerSuggestions(name);
+  applyCustomerAddressForName(name.trim());
+}
+
+/* เติมที่อยู่ถ้าชื่อนี้เคยบันทึกไว้ที่เดียว (ทับที่อยู่เดิมได้ถ้าเป็นค่าที่เติมอัตโนมัติไว้ ไม่ใช่ที่คนพิมพ์เอง)
+   และล้างที่อยู่ทิ้งถ้าเปลี่ยนไปเป็นชื่อที่ไม่มีที่อยู่บันทึกไว้ — กันปัญหาที่อยู่ของชื่อเก่าค้างอยู่ตอนเปลี่ยนชื่อ
+   (บั๊กที่เจอ 2026-09-14: เลือกฟู่ไท้ได้ที่อยู่มา แล้วลบพิมพ์ชื่อใหม่ที่ไม่มีที่อยู่ แต่ที่อยู่เดิมค้างไม่หาย) */
+function applyCustomerAddressForName(name){
   const addrField = document.getElementById('customerAddrInput');
-  if(name && customerDirectory[name] && customerDirectory[name].length === 1 && !addrField.value){
-    addrField.value = customerDirectory[name][0];
+  const known = name && customerDirectory[name] && customerDirectory[name].length === 1 ? customerDirectory[name][0] : null;
+  if(known && (!addrField.value || addrWasAutofilled)){
+    addrField.value = known;
+    addrWasAutofilled = true;
+  } else if(!known && addrWasAutofilled){
+    addrField.value = '';
+    addrWasAutofilled = false;
   }
+}
+
+/* คนพิมพ์แก้ที่อยู่เอง — เลิกถือว่าเป็นค่าที่เติมอัตโนมัติ จะได้ไม่ถูกล้าง/ทับตอนพิมพ์ชื่อต่อ */
+function onCustomerAddrInput(){
+  addrWasAutofilled = false;
 }
 
 function proceedToCapture(){
@@ -415,7 +476,6 @@ async function submitCheckin(){
     if(currentEntry.addr && !customerDirectory[currentEntry.name].includes(currentEntry.addr)){
       customerDirectory[currentEntry.name].push(currentEntry.addr);
     }
-    renderCustomerNamesList();
     recentSubmissions.unshift({ name: currentEntry.name, time: nowStr });
     renderRecentList();
     document.getElementById('successLine').textContent = currentEntry.name + ' — ' + nowStr;
@@ -478,6 +538,8 @@ function resetForNextEntry(){
   document.getElementById('customerNameInput').value = '';
   document.getElementById('customerAddrInput').value = '';
   document.getElementById('customerNoteInput').value = '';
+  document.getElementById('customerSuggestions').classList.remove('show');
+  addrWasAutofilled = false;
   document.getElementById('successSection').style.display = 'none';
   document.getElementById('captureSection').style.display = 'none';
   document.getElementById('entrySection').scrollIntoView({behavior:'smooth', block:'start'});
