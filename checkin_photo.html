@@ -71,6 +71,13 @@
   .acItem:last-child{border-bottom:none;}
   .acItem:active,.acItem.hover{background:var(--amber-soft);}
   .acEmpty{padding:10px 12px;font-size:12.5px;color:var(--slate);}
+
+  .msgBtnGroup{display:flex;flex-wrap:wrap;gap:8px;}
+  .msgBtn{padding:11px 18px;border-radius:20px;border:1.5px solid var(--line);background:#fff;color:var(--ink);
+    font-family:'Sarabun';font-size:14.5px;font-weight:600;cursor:pointer;}
+  .msgBtn:active{background:var(--amber-soft);}
+  .msgBtn.selected{background:var(--amber);border-color:var(--amber-deep);color:var(--ink);}
+  .msgBtnEmpty{font-size:12.5px;color:var(--slate);}
 </style>
 </head>
 <body>
@@ -95,9 +102,7 @@
 
   <div class="card">
     <div class="stepLabel">ขั้นที่ 1 — คุณคือใคร</div>
-    <select id="messengerSelect" onchange="onMessengerChange(this.value)">
-      <option value="">— เลือกชื่อ —</option>
-    </select>
+    <div class="msgBtnGroup" id="messengerButtons"></div>
     <div class="geoLine ok" id="messengerAutoLine" style="display:none;">🔗 จำชื่อนี้ไว้กับ LINE ของคุณแล้ว — เปิดครั้งหน้าเลือกให้อัตโนมัติ</div>
   </div>
 
@@ -111,8 +116,12 @@
     </div>
     <label class="fieldLabel">ที่อยู่ (ถ้ามี)</label>
     <input class="input" id="customerAddrInput" placeholder="ที่อยู่ (เติมอัตโนมัติถ้าเคยบันทึกไว้)" oninput="onCustomerAddrInput()">
-    <label class="fieldLabel">รายละเอียดงาน (ถ้ามี)</label>
-    <input class="input" id="customerNoteInput" placeholder="เช่น ส่งของ / วางบิล / รับเช็ค">
+    <label class="fieldLabel">รายละเอียดงาน (ถ้ามี — แตะเลือกได้มากกว่า 1 อย่าง)</label>
+    <div class="msgBtnGroup" id="noteTagGroup">
+      <button type="button" class="msgBtn" data-tag="ส่งของ" onclick="toggleNoteTag(this)">📦 ส่งของ</button>
+      <button type="button" class="msgBtn" data-tag="วางบิล" onclick="toggleNoteTag(this)">🧾 วางบิล</button>
+      <button type="button" class="msgBtn" data-tag="รับเช็ค" onclick="toggleNoteTag(this)">💵 รับเช็ค</button>
+    </div>
     <button class="btn primary" style="margin-top:12px;" onclick="proceedToCapture()">ถัดไป — ถ่ายรูป</button>
   </div>
 
@@ -223,21 +232,35 @@ async function loadInitData(){
     if(data.matchedMessenger) matchedMessenger = data.matchedMessenger;
   }catch(e){ console.error('load init data failed', e); }
 
-  const sel = document.getElementById('messengerSelect');
-  sel.innerHTML = '<option value="">— เลือกชื่อ —</option>' +
-    MESSENGERS.map(m=>`<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join('');
+  renderMessengerButtons();
 
   // ลำดับความสำคัญ: จำได้จากบัญชี LINE (ข้ามการเลือกเอง) > เคยเลือกไว้ในเครื่องนี้ > ไม่มีอะไรเลือกไว้
-  // สำคัญ: ต้องเรียก onMessengerChange() เสมอตอน pre-select ไม่ใช่แค่ตั้ง sel.value เฉย ๆ — ไม่งั้นขั้นที่ 2
-  // (entrySection) จะไม่โผล่ให้ ทั้งที่ดรอปดาวน์ขึ้นชื่อไว้ให้แล้ว (บั๊กที่เจอ 2026-09-14)
+  // สำคัญ: ต้องเรียก onMessengerChange() เสมอตอน pre-select ไม่ใช่แค่ไฮไลต์ปุ่มเฉย ๆ — ไม่งั้นขั้นที่ 2
+  // (entrySection) จะไม่โผล่ให้ ทั้งที่ปุ่มไฮไลต์ไว้ให้แล้ว (บั๊กที่เจอ 2026-09-14)
   if(matchedMessenger && MESSENGERS.includes(matchedMessenger)){
-    sel.value = matchedMessenger;
     onMessengerChange(matchedMessenger, /*fromAutoMatch=*/true);
   } else if(selectedMessenger && MESSENGERS.includes(selectedMessenger)){
-    sel.value = selectedMessenger;
     onMessengerChange(selectedMessenger, /*fromAutoMatch=*/false, /*silent=*/true);
   }
 }
+
+/* ---------- ขั้นที่ 1: ปุ่มติ๊กเลือกชื่อแมส (แทนดรอปดาวน์ — กดง่ายกว่าบนมือถือ เพราะจำนวนแมสมีไม่เยอะ) ---------- */
+function renderMessengerButtons(){
+  const box = document.getElementById('messengerButtons');
+  if(MESSENGERS.length === 0){
+    box.innerHTML = '<div class="msgBtnEmpty">ยังไม่มีรายชื่อแมสในระบบ</div>';
+    return;
+  }
+  box.innerHTML = MESSENGERS.map(m =>
+    `<button type="button" class="msgBtn${m === selectedMessenger ? ' selected' : ''}" data-name="${escapeHtml(m)}">${escapeHtml(m)}</button>`
+  ).join('');
+}
+
+document.getElementById('messengerButtons').addEventListener('click', function(e){
+  const btn = e.target.closest('.msgBtn[data-name]');
+  if(!btn) return;
+  onMessengerChange(btn.getAttribute('data-name'));
+});
 
 /* ---------- ช่องแนะนำชื่อลูกค้า (dropdown เอง แทน <datalist> — บนมือถือ/ในแอป LINE
    <datalist> จะโผล่เป็นแถบเหนือคีย์บอร์ดแทนที่จะเป็นลิสต์ใต้ช่อง ใช้ยากมากถ้ามีชื่อลูกค้าเป็นพัน ๆ ชื่อ) ---------- */
@@ -276,6 +299,11 @@ function onMessengerChange(name, fromAutoMatch, silent){
   selectedMessenger = name;
   try{ localStorage.setItem('futai_photoCheckin_messenger', name); }catch(e){}
   document.getElementById('entrySection').style.display = name ? 'block' : 'none';
+
+  // ไฮไลต์ปุ่มที่เลือกอยู่ ล้างไฮไลต์ปุ่มอื่น
+  document.querySelectorAll('#messengerButtons .msgBtn').forEach(b=>{
+    b.classList.toggle('selected', b.getAttribute('data-name') === name);
+  });
 
   const autoLine = document.getElementById('messengerAutoLine');
   if(fromAutoMatch){
@@ -322,13 +350,22 @@ function onCustomerAddrInput(){
   addrWasAutofilled = false;
 }
 
+/* แตะติ๊ก/ยกเลิกป้ายรายละเอียดงาน (ส่งของ/วางบิล/รับเช็ค) — แทนการพิมพ์เอง เลือกได้พร้อมกันหลายอย่าง
+   เช่น จุดเดียวกันอาจทั้งส่งของและรับเช็คในคราวเดียว */
+function toggleNoteTag(btn){
+  btn.classList.toggle('selected');
+}
+function getSelectedNoteTags(){
+  return Array.from(document.querySelectorAll('#noteTagGroup .msgBtn.selected')).map(b=>b.getAttribute('data-tag'));
+}
+
 function proceedToCapture(){
   const name = document.getElementById('customerNameInput').value.trim();
   if(!name){ alert('กรุณากรอกชื่อลูกค้า/ร้านก่อน'); return; }
   currentEntry = {
     name,
     addr: document.getElementById('customerAddrInput').value.trim(),
-    note: document.getElementById('customerNoteInput').value.trim()
+    note: getSelectedNoteTags().join(', ')
   };
   document.getElementById('captureSection').style.display = 'block';
   document.getElementById('selectedEntryLine').textContent = '🎯 ' + currentEntry.name + (currentEntry.addr ? ' — ' + currentEntry.addr : '');
@@ -537,7 +574,7 @@ function resetForNextEntry(){
   capturedGeo = null;
   document.getElementById('customerNameInput').value = '';
   document.getElementById('customerAddrInput').value = '';
-  document.getElementById('customerNoteInput').value = '';
+  document.querySelectorAll('#noteTagGroup .msgBtn.selected').forEach(b=>b.classList.remove('selected'));
   document.getElementById('customerSuggestions').classList.remove('show');
   addrWasAutofilled = false;
   document.getElementById('successSection').style.display = 'none';
