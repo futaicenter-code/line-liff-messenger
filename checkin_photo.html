@@ -221,7 +221,11 @@ function saveGasUrl(){
 }
 
 /* ---------- โหลดรายชื่อแมส + คำแนะนำลูกค้า ---------- */
-async function loadInitData(){
+// ลองใหม่อัตโนมัติสูงสุด 2 ครั้งก่อนยอมแพ้ (retryCount) — เพราะเจอบ่อยมากว่า Apps Script เพิ่งตื่นจาก
+// cold start หรือเน็ตมือถือกระตุกชั่วคราว แล้วพอลองใหม่อีกทีก็ผ่านปกติ ไม่อยากให้แมสต้องปิดเปิดแอปเอง
+// ทุกครั้งที่เจอปัญหาชั่วคราวแบบนี้ (เจอปัญหานี้ระหว่างทดสอบภาคสนามจริง 2026-09-15)
+async function loadInitData(retryCount){
+  retryCount = retryCount || 0;
   let matchedMessenger = null;
   const errBanner = document.getElementById('initErrorBanner');
   errBanner.classList.remove('show');
@@ -236,9 +240,17 @@ async function loadInitData(){
     if(data.customers && typeof data.customers === 'object') customerDirectory = data.customers;
     if(data.matchedMessenger) matchedMessenger = data.matchedMessenger;
   }catch(e){
+    if(retryCount < 2){
+      console.warn('load init data failed, retrying (' + (retryCount+1) + ')...', e);
+      await new Promise(r=>setTimeout(r, 1500));
+      return loadInitData(retryCount + 1);
+    }
     console.error('load init data failed', e);
     // โชว์ตรงๆ ในหน้าเว็บ เพราะบนมือถือ (โดยเฉพาะเปิดผ่านแอป LINE) ไม่มีทางเปิด console ดูได้เลย
-    errBanner.textContent = '⚠️ โหลดรายชื่อแมส/ลูกค้าไม่สำเร็จ: ' + (e.message || String(e)) + ' —ลองปิดแล้วเปิดหน้านี้ใหม่อีกครั้ง ถ้ายังไม่หายกรุณาแคปหน้าจอนี้ส่งให้ผู้ดูแลระบบ';
+    // พร้อมปุ่ม "ลองใหม่" กดเรียก loadInitData() ซ้ำได้เลยโดยไม่ต้องปิดเปิดหน้าทั้งหน้า
+    errBanner.innerHTML = '⚠️ โหลดรายชื่อแมส/ลูกค้าไม่สำเร็จ (ลองอัตโนมัติ 3 ครั้งแล้ว): ' + escapeHtml(e.message || String(e)) +
+      ' <button type="button" class="btn small primary" style="width:auto;display:inline;padding:4px 12px;margin-left:4px;" onclick="loadInitData()">🔄 ลองใหม่</button>' +
+      '<br>ถ้ายังไม่หายกรุณาแคปหน้าจอนี้ส่งให้ผู้ดูแลระบบ';
     errBanner.classList.add('show');
   }
 
