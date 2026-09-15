@@ -93,6 +93,10 @@
     ถึงจะขอ GPS/กล้องได้ — ตอนนี้เปิดแบบที่เบราว์เซอร์บล็อกอยู่
   </div>
 
+  <!-- โชว์ error ตรงๆ ในหน้าเว็บถ้าโหลดรายชื่อแมส/ลูกค้าไม่สำเร็จ — เดิมจะเงียบแค่ console.error ซึ่งบนมือถือ
+       ไม่มีทางเปิดดู console ได้เลย ทำให้ debug ยากมาก (เจอปัญหานี้ซ้ำๆ ระหว่างทดสอบ 2026-09-15) -->
+  <div class="banner" id="initErrorBanner"></div>
+
   <!-- ตั้งค่า URL ของ Google Apps Script (ระบบใหม่นี้ — คนละอันกับแอปหลัก) ใส่ครั้งเดียว ระบบจะจำไว้ในเครื่องนี้ -->
   <div class="cfgPanel" id="cfgPanel" style="display:none;">
     <label>Google Apps Script Web App URL ของระบบเช็คอินรูปถ่ายนี้ (ลงท้ายด้วย /exec)</label>
@@ -222,15 +226,24 @@ function saveGasUrl(){
 /* ---------- โหลดรายชื่อแมส + คำแนะนำลูกค้า ---------- */
 async function loadInitData(){
   let matchedMessenger = null;
+  const errBanner = document.getElementById('initErrorBanner');
+  errBanner.classList.remove('show');
   try{
     let url = buildActionUrl('init');
     if(liffUserId) url += '&lineUserId=' + encodeURIComponent(liffUserId);
     const res = await fetch(url);
+    if(!res.ok){ throw new Error('เซิร์ฟเวอร์ตอบกลับผิดปกติ (HTTP ' + res.status + ')'); }
     const data = await res.json();
+    if(data.ok === false){ throw new Error(data.error || 'เซิร์ฟเวอร์รายงานข้อผิดพลาดไม่ทราบสาเหตุ'); }
     if(Array.isArray(data.messengers)) MESSENGERS = data.messengers;
     if(data.customers && typeof data.customers === 'object') customerDirectory = data.customers;
     if(data.matchedMessenger) matchedMessenger = data.matchedMessenger;
-  }catch(e){ console.error('load init data failed', e); }
+  }catch(e){
+    console.error('load init data failed', e);
+    // โชว์ตรงๆ ในหน้าเว็บ เพราะบนมือถือ (โดยเฉพาะเปิดผ่านแอป LINE) ไม่มีทางเปิด console ดูได้เลย
+    errBanner.textContent = '⚠️ โหลดรายชื่อแมส/ลูกค้าไม่สำเร็จ: ' + (e.message || String(e)) + ' —ลองปิดแล้วเปิดหน้านี้ใหม่อีกครั้ง ถ้ายังไม่หายกรุณาแคปหน้าจอนี้ส่งให้ผู้ดูแลระบบ';
+    errBanner.classList.add('show');
+  }
 
   renderMessengerButtons();
 
