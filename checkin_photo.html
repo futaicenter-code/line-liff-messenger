@@ -157,7 +157,6 @@
       <div class="check">✅</div>
       <div style="font-weight:600;margin:8px 0 4px 0;">ส่งเช็คอินสำเร็จ</div>
       <div style="font-size:12.5px;color:var(--slate);margin-bottom:14px;" id="successLine"></div>
-      <div style="font-size:11.5px;color:var(--slate);margin-bottom:10px;display:none;" id="autoCloseLine"></div>
       <button class="btn primary" onclick="resetForNextEntry()">📷 ถ่ายรูปจุดต่อไป</button>
     </div>
   </div>
@@ -191,7 +190,6 @@ let capturedPhotoDataUrl = null;
 let capturedGeo = null;
 let liffUserId = '';      // ได้จาก liff.getProfile() ถ้าเปิดจากในแอป LINE — ใช้จำว่าใครคือใคร ไม่ต้องเลือกชื่อซ้ำ
 let liffDisplayName = '';
-let autoCloseTimer = null;
 let addrWasAutofilled = false; // กันไม่ให้ที่อยู่ของชื่อเก่าค้างอยู่ตอนเปลี่ยนไปพิมพ์ชื่อใหม่ที่ยังไม่มีที่อยู่บันทึกไว้
 const todayStr = new Date().toISOString().slice(0,10);
 
@@ -546,25 +544,20 @@ async function submitCheckin(){
       }
     }catch(sendErr){ console.error('liff.sendMessages failed (ไม่กระทบการเช็คอินที่สำเร็จแล้ว)', sendErr); }
 
-    // ปิดหน้าต่างอัตโนมัติถ้าเปิดจากในแอป LINE — เผื่อเวลาให้กดปุ่ม "ถ่ายรูปจุดต่อไป" ทันเพื่อยกเลิกได้
-    if(typeof liff !== 'undefined' && liff.isInClient()){
-      const closeLine = document.getElementById('autoCloseLine');
-      let secondsLeft = 3;
-      closeLine.style.display = 'block';
-      closeLine.textContent = `หน้านี้จะปิดอัตโนมัติใน ${secondsLeft} วิ... (กด "ถ่ายรูปจุดต่อไป" เพื่ออยู่ต่อ)`;
-      autoCloseTimer = setInterval(()=>{
-        secondsLeft -= 1;
-        if(secondsLeft <= 0){
-          clearInterval(autoCloseTimer);
-          autoCloseTimer = null;
-          try{ liff.closeWindow(); }catch(e){}
-        } else {
-          closeLine.textContent = `หน้านี้จะปิดอัตโนมัติใน ${secondsLeft} วิ... (กด "ถ่ายรูปจุดต่อไป" เพื่ออยู่ต่อ)`;
-        }
-      }, 1000);
-    }
+    // ไม่ปิดหน้าต่างอัตโนมัติแล้ว (เปลี่ยนตามที่ขอ 2026-09-15) — ปล่อยให้ค้างอยู่ที่หน้าสำเร็จได้เลย
+    // แมสกดปุ่ม "ถ่ายรูปจุดต่อไป" เองเมื่อพร้อมจะเช็คอินจุดถัดไป ไม่ต้องรีบ/ไม่ต้องกดปิดหน้าเอง
   }catch(e){
-    statusEl.textContent = '❌ ส่งไม่สำเร็จ กรุณาลองอีกครั้ง (' + e.message + ')';
+    // เจอบ่อยบนมือถือ/เน็ตกระตุก: เซิร์ฟเวอร์ประมวลผลจนจบจริง (บันทึกชีต + ส่งรูป + ยิงแจ้งเตือนสำเร็จ)
+    // แต่การตอบกลับ (JSON) มาไม่ครบ/ไม่ถึงฝั่งมือถือ ทำให้ res.json() พังด้วย error แบบนี้ — ถ้าเข้าใจผิดว่า
+    // "ส่งไม่สำเร็จ" แล้วกดส่งซ้ำ จะได้ข้อมูลซ้ำ 2 รายการในชีต (คนละ ID กัน เพราะสร้าง ID ใหม่ทุกครั้งที่กดส่ง)
+    // เลยต้องแยกเคสนี้ออกมาเตือนให้เช็คก่อน แทนที่จะบอกว่า "ไม่สำเร็จ" เฉยๆ
+    const looksLikeGarbledResponse = e instanceof SyntaxError || /Unexpected token|is not valid JSON/i.test(e.message || '');
+    if(looksLikeGarbledResponse){
+      statusEl.textContent = '⚠️ ไม่แน่ใจว่าส่งสำเร็จหรือไม่ (เน็ตอาจขาดตอนตอนรับผลลัพธ์ ทั้งที่เช็คอินอาจถูกบันทึกไปแล้วจริง) — เลื่อนลงไปดู "ส่งแล้ววันนี้" ด้านล่างว่ามีรายการนี้หรือยัง ก่อนกดส่งซ้ำ';
+      loadMyTodayLog(); // รีเฟรชให้เช็คได้ทันทีโดยไม่ต้องปิดเปิดหน้าใหม่
+    } else {
+      statusEl.textContent = '❌ ส่งไม่สำเร็จ กรุณาลองอีกครั้ง (' + e.message + ')';
+    }
     statusEl.className = 'statusMsg err';
     btn.disabled = false;
   }
@@ -599,8 +592,6 @@ function renderRecentList(entries){
 }
 
 function resetForNextEntry(){
-  if(autoCloseTimer){ clearInterval(autoCloseTimer); autoCloseTimer = null; }
-  document.getElementById('autoCloseLine').style.display = 'none';
   currentEntry = null;
   capturedPhotoDataUrl = null;
   capturedGeo = null;
