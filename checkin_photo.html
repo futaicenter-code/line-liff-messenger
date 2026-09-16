@@ -269,6 +269,9 @@ const HARDCODED_GAS_URL = "https://script.google.com/macros/s/AKfycbyxu01EBrkdoT
 /* ==================================================== */
 
 let sheetWebAppUrl = "";
+let userPickedMessengerManually = false; // คนกดเลือกชื่อตัวเองเองจริง ๆ ไปแล้วรอบนี้ (ดู onMessengerChange/loadInitData
+                                          // — กันไม่ให้ผลจับคู่อัตโนมัติจากบัญชี LINE ที่มาทีหลัง (อาจใช้เวลาหลายวิ)
+                                          // มาทับการเลือกที่คนกดเองไปแล้วอย่างเงียบๆ, บั๊กจริงที่เจอ 2026-09-16)
 let currentEntry = null; // { name, addr, note }
 let capturedPhotoDataUrl = null;
 let capturedGeo = null;
@@ -348,10 +351,18 @@ async function loadInitData(retryCount){
 
   renderMessengerButtons();
 
-  // ลำดับความสำคัญ: จำได้จากบัญชี LINE (ข้ามการเลือกเอง) > เคยเลือกไว้ในเครื่องนี้ > ไม่มีอะไรเลือกไว้
-  // สำคัญ: ต้องเรียก onMessengerChange() เสมอตอน pre-select ไม่ใช่แค่ไฮไลต์ปุ่มเฉย ๆ — ไม่งั้นขั้นที่ 2
-  // (entrySection) จะไม่โผล่ให้ ทั้งที่ปุ่มไฮไลต์ไว้ให้แล้ว (บั๊กที่เจอ 2026-09-14)
-  if(matchedMessenger && MESSENGERS.includes(matchedMessenger)){
+  if(userPickedMessengerManually){
+    // ระหว่างที่คำขอนี้กำลังโหลดอยู่ (เน็ต/เซิร์ฟเวอร์ช้าพอดี) คนกดเลือกชื่อตัวเองไปเองแล้วจริง ๆ —
+    // ห้ามเอาผลจับคู่อัตโนมัติจากบัญชี LINE (ซึ่งมาถึงทีหลัง) มาทับการเลือกที่กดเองอีกเด็ดขาด ไม่งั้นจะ
+    // กลายเป็นเช็คอินผิดชื่อคนแบบเงียบๆ โดยที่คนกดไม่รู้ตัวเลย (บั๊กจริงที่เจอ 2026-09-16: กดชื่อตัวเอง
+    // ถูกต้องแล้ว แต่ระบบกลับเด้งไปแจ้งเตือนเป็นชื่ออื่นแทน) — แค่ re-render ปุ่มให้ตรงกับสิ่งที่เลือกไว้พอ
+    document.querySelectorAll('#messengerButtons .msgBtn').forEach(b=>{
+      b.classList.toggle('selected', b.getAttribute('data-name') === selectedMessenger);
+    });
+  } else if(matchedMessenger && MESSENGERS.includes(matchedMessenger)){
+    // ลำดับความสำคัญ: จำได้จากบัญชี LINE (ข้ามการเลือกเอง) > เคยเลือกไว้ในเครื่องนี้ > ไม่มีอะไรเลือกไว้
+    // สำคัญ: ต้องเรียก onMessengerChange() เสมอตอน pre-select ไม่ใช่แค่ไฮไลต์ปุ่มเฉย ๆ — ไม่งั้นขั้นที่ 2
+    // (entrySection) จะไม่โผล่ให้ ทั้งที่ปุ่มไฮไลต์ไว้ให้แล้ว (บั๊กที่เจอ 2026-09-14)
     onMessengerChange(matchedMessenger, /*fromAutoMatch=*/true, /*silent=*/false, /*preloadedLog=*/todayLogFromInit);
   } else if(selectedMessenger && MESSENGERS.includes(selectedMessenger)){
     onMessengerChange(selectedMessenger, /*fromAutoMatch=*/false, /*silent=*/true);
@@ -362,6 +373,7 @@ async function loadInitData(retryCount){
 document.getElementById('messengerButtons').addEventListener('click', function(e){
   const btn = e.target.closest('.msgBtn[data-name]');
   if(!btn) return;
+  userPickedMessengerManually = true; // คนกดเลือกเองจริง ๆ ครั้งนี้ — ห้ามให้ผลจับคู่อัตโนมัติที่มาทีหลังทับอีก
   onMessengerChange(btn.getAttribute('data-name'));
 });
 
