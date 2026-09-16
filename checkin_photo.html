@@ -6,9 +6,11 @@
 <title>FUTAI — เช็คอินรูปถ่าย (LINE)</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<!-- LINE LIFF SDK — ทำให้หน้านี้เปิดในแอป LINE ได้เนียน ถ้าเปิดทดสอบในเบราว์เซอร์ปกติ (ไม่ผ่าน LINE)
-     ก็ยังใช้งานได้ปกติ แค่ liff.init() จะไม่ทำอะไร -->
-<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<!-- จองการเชื่อมต่อ (DNS/TLS handshake) ไว้ล่วงหน้ากับโดเมนที่รู้อยู่แล้วว่าต้องใช้แน่ๆ (LINE SDK, Apps
+     Script backend) ตั้งแต่ตอนเริ่มโหลดหน้าเลย แทนที่จะรอให้ค่อยเริ่มต่อตอนถึงจังหวะนั้นจริงๆ — ช่วยตัด
+     เวลาแฝงส่วนที่เป็นแค่การเชื่อมต่อออกไปได้บ้าง โดยเฉพาะบนเน็ตมือถือ (เพิ่มมา 2026-09-16) -->
+<link rel="preconnect" href="https://static.line-scdn.net" crossorigin>
+<link rel="preconnect" href="https://script.google.com" crossorigin>
 <style>
   :root{
     --ink:#1B2430; --paper:#F7F5F0; --card:#FFFFFF;
@@ -168,6 +170,91 @@
 </main>
 
 <script>
+/* ===================== ข้อมูล/ฟังก์ชันที่ต้องใช้ "ก่อน" อย่างอื่นทั้งหมด =====================
+   บล็อกนี้ไม่พึ่งพา LINE SDK หรือเน็ตเวิร์กเลย จึงจงใจแยกไว้เป็นสคริปต์ก้อนแรกสุด (ก่อนแม้แต่จะเริ่ม
+   โหลด LIFF SDK ของ LINE) เพื่อให้ทาสีข้อมูลชุดล่าสุดที่เคยโหลดสำเร็จไว้ในเครื่องนี้ (ถ้ามี) ขึ้นบนจอ
+   ได้เร็วที่สุดเท่าที่เบราว์เซอร์จะทำได้ — ไม่ต้องรอดาวน์โหลด/รัน SDK ของ LINE หรือรอเน็ตต่อไปหา
+   Apps Script เลยด้วยซ้ำ (แก้ 2026-09-16 ตามที่ขอให้ข้อมูลขึ้นเร็วที่สุดเท่าที่ทำได้) ==================== */
+let MESSENGERS = [];
+let customerDirectory = {}; // { name: [addr, addr, ...] }
+let selectedMessenger = localStorage.getItem('futai_photoCheckin_messenger') || '';
+const todayStr = new Date().toISOString().slice(0,10);
+
+function escapeHtml(str){
+  if(str===null||str===undefined||str==='') return "";
+  return String(str).replace(/[&<>"']/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+}
+
+/* ---------- แคชในเครื่อง (localStorage) เพื่อให้ "รู้สึกเปิดหน้าแล้วเร็ว" แม้ Apps Script/เน็ตมือถือ
+   จะช้าแค่ไหนก็ตาม: โชว์ข้อมูลชุดล่าสุดที่เคยโหลดสำเร็จจากเครื่องนี้ทันทีที่หน้าเปิด (ไม่ต้องรอเน็ตเลย)
+   แล้วค่อยรีเฟรชทับเงียบๆ อีกทีตอนข้อมูลจริงมาถึง (เพิ่มมา 2026-09-15) ---------- */
+function loadCachedRoster(){
+  try{
+    const raw = localStorage.getItem('futai_photoCheckin_rosterCache');
+    if(!raw) return false;
+    const cached = JSON.parse(raw);
+    if(Array.isArray(cached.messengers)) MESSENGERS = cached.messengers;
+    if(cached.customers && typeof cached.customers === 'object') customerDirectory = cached.customers;
+    return true;
+  }catch(e){ return false; }
+}
+function cacheRoster(){
+  try{ localStorage.setItem('futai_photoCheckin_rosterCache', JSON.stringify({ messengers: MESSENGERS, customers: customerDirectory })); }catch(e){}
+}
+function loadCachedTodayLog(name){
+  try{
+    const raw = localStorage.getItem('futai_photoCheckin_todayCache_' + name);
+    if(!raw) return null;
+    const cached = JSON.parse(raw);
+    if(cached.date !== todayStr) return null; // ข้ามวันมาแล้ว แคชเมื่อวานใช้ไม่ได้
+    return Array.isArray(cached.entries) ? cached.entries : null;
+  }catch(e){ return null; }
+}
+function cacheTodayLog(name, entries){
+  try{ localStorage.setItem('futai_photoCheckin_todayCache_' + name, JSON.stringify({ date: todayStr, entries: entries })); }catch(e){}
+}
+
+/* ---------- ขั้นที่ 1: ปุ่มติ๊กเลือกชื่อแมส ---------- */
+function renderMessengerButtons(){
+  const box = document.getElementById('messengerButtons');
+  if(MESSENGERS.length === 0){
+    box.innerHTML = '<div class="msgBtnEmpty">ยังไม่มีรายชื่อแมสในระบบ</div>';
+    return;
+  }
+  box.innerHTML = MESSENGERS.map(m =>
+    `<button type="button" class="msgBtn${m === selectedMessenger ? ' selected' : ''}" data-name="${escapeHtml(m)}">${escapeHtml(m)}</button>`
+  ).join('');
+}
+
+function renderRecentList(entries){
+  const section = document.getElementById('recentSection');
+  const list = document.getElementById('recentList');
+  if(!entries || entries.length === 0){ section.style.display = 'none'; return; }
+  section.style.display = 'block';
+  list.innerHTML = entries.map(r=>{
+    const label = r.addr ? (r.name + ' — ' + r.addr) : r.name;
+    return `<div class="recentItem">✅ ${escapeHtml(label)} — ${escapeHtml(r.checkinTime || '')}</div>`;
+  }).join('');
+}
+
+// ทาสีหน้าจอจากแคชทันที ก่อนแม้แต่จะเริ่มโหลด SDK ของ LINE ด้านล่างนี้ด้วยซ้ำ
+if(loadCachedRoster()){
+  renderMessengerButtons();
+  if(selectedMessenger && MESSENGERS.includes(selectedMessenger)){
+    document.getElementById('entrySection').style.display = 'block';
+    const cachedLog = loadCachedTodayLog(selectedMessenger);
+    if(cachedLog) renderRecentList(cachedLog);
+  }
+}
+</script>
+
+<!-- LINE LIFF SDK — ย้ายมาไว้ตรงนี้ (หลังทาสีข้อมูลแคชแล้ว) แทนที่จะไว้บน <head> โดยตั้งใจ: ถ้าอยู่บน
+     <head> เบราว์เซอร์ต้องรอดาวน์โหลด/รันก้อนนี้ให้เสร็จก่อน ถึงจะเริ่มวาดอะไรในหน้าเว็บได้เลยแม้แต่นิดเดียว
+     (แม้แต่ข้อมูลแคชด้านบน) — ย้ายมาไว้หลังบล็อกทาสีแคชแบบนี้ ทำให้คนเปิดเห็นข้อมูลชุดล่าสุดก่อนที่ระบบจะ
+     ไปรอ LINE เลย ถ้าเปิดทดสอบในเบราว์เซอร์ปกติ (ไม่ผ่าน LINE) ก็ยังใช้งานได้ปกติ แค่ liff.init() จะไม่ทำอะไร -->
+<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+
+<script>
 /* ===================== CONFIG =====================
    ใส่ LIFF ID ตรงนี้หลังจากสร้าง LIFF app ใน LINE Developers Console แล้ว (ดูคอมเมนต์บนสุดของ
    line_photo_checkin_backend.gs / เอกสารแผนที่บันทึกไว้ในโปรเจกต์ สำหรับขั้นตอนสร้าง)
@@ -182,16 +269,12 @@ const HARDCODED_GAS_URL = "https://script.google.com/macros/s/AKfycbyxu01EBrkdoT
 /* ==================================================== */
 
 let sheetWebAppUrl = "";
-let MESSENGERS = [];
-let customerDirectory = {}; // { name: [addr, addr, ...] }
-let selectedMessenger = localStorage.getItem('futai_photoCheckin_messenger') || '';
 let currentEntry = null; // { name, addr, note }
 let capturedPhotoDataUrl = null;
 let capturedGeo = null;
 let liffUserId = '';      // ได้จาก liff.getProfile() ถ้าเปิดจากในแอป LINE — ใช้จำว่าใครคือใคร ไม่ต้องเลือกชื่อซ้ำ
 let liffDisplayName = '';
 let addrWasAutofilled = false; // กันไม่ให้ที่อยู่ของชื่อเก่าค้างอยู่ตอนเปลี่ยนไปพิมพ์ชื่อใหม่ที่ยังไม่มีที่อยู่บันทึกไว้
-const todayStr = new Date().toISOString().slice(0,10);
 
 /* ---------- ตรวจ context ที่ GPS/กล้องจะถูกบล็อก ---------- */
 function geoWillBeBlocked(){
@@ -224,32 +307,6 @@ function saveGasUrl(){
    จะช้าแค่ไหนก็ตาม: โชว์ข้อมูลชุดล่าสุดที่เคยโหลดสำเร็จจากเครื่องนี้ทันทีที่หน้าเปิด (ไม่ต้องรอเน็ตเลย)
    แล้วค่อยรีเฟรชทับเงียบๆ อีกทีตอนข้อมูลจริงมาถึง — คนละเรื่องกับความเร็วเน็ต/เซิร์ฟเวอร์จริง แต่ช่วยให้
    ไม่ต้องจ้องหน้าจอว่างเปล่ารอ (เพิ่มมา 2026-09-15 ตามที่ขอให้เปิดแล้วเห็นอะไรไวขึ้น) ---------- */
-function loadCachedRoster(){
-  try{
-    const raw = localStorage.getItem('futai_photoCheckin_rosterCache');
-    if(!raw) return false;
-    const cached = JSON.parse(raw);
-    if(Array.isArray(cached.messengers)) MESSENGERS = cached.messengers;
-    if(cached.customers && typeof cached.customers === 'object') customerDirectory = cached.customers;
-    return true;
-  }catch(e){ return false; }
-}
-function cacheRoster(){
-  try{ localStorage.setItem('futai_photoCheckin_rosterCache', JSON.stringify({ messengers: MESSENGERS, customers: customerDirectory })); }catch(e){}
-}
-function loadCachedTodayLog(name){
-  try{
-    const raw = localStorage.getItem('futai_photoCheckin_todayCache_' + name);
-    if(!raw) return null;
-    const cached = JSON.parse(raw);
-    if(cached.date !== todayStr) return null; // ข้ามวันมาแล้ว แคชเมื่อวานใช้ไม่ได้
-    return Array.isArray(cached.entries) ? cached.entries : null;
-  }catch(e){ return null; }
-}
-function cacheTodayLog(name, entries){
-  try{ localStorage.setItem('futai_photoCheckin_todayCache_' + name, JSON.stringify({ date: todayStr, entries: entries })); }catch(e){}
-}
-
 /* ---------- โหลดรายชื่อแมส + คำแนะนำลูกค้า ---------- */
 // ลองใหม่อัตโนมัติสูงสุด 2 ครั้งก่อนยอมแพ้ (retryCount) — เพราะเจอบ่อยมากว่า Apps Script เพิ่งตื่นจาก
 // cold start หรือเน็ตมือถือกระตุกชั่วคราว แล้วพอลองใหม่อีกทีก็ผ่านปกติ ไม่อยากให้แมสต้องปิดเปิดแอปเอง
@@ -302,17 +359,6 @@ async function loadInitData(retryCount){
 }
 
 /* ---------- ขั้นที่ 1: ปุ่มติ๊กเลือกชื่อแมส (แทนดรอปดาวน์ — กดง่ายกว่าบนมือถือ เพราะจำนวนแมสมีไม่เยอะ) ---------- */
-function renderMessengerButtons(){
-  const box = document.getElementById('messengerButtons');
-  if(MESSENGERS.length === 0){
-    box.innerHTML = '<div class="msgBtnEmpty">ยังไม่มีรายชื่อแมสในระบบ</div>';
-    return;
-  }
-  box.innerHTML = MESSENGERS.map(m =>
-    `<button type="button" class="msgBtn${m === selectedMessenger ? ' selected' : ''}" data-name="${escapeHtml(m)}">${escapeHtml(m)}</button>`
-  ).join('');
-}
-
 document.getElementById('messengerButtons').addEventListener('click', function(e){
   const btn = e.target.closest('.msgBtn[data-name]');
   if(!btn) return;
@@ -638,17 +684,6 @@ async function loadMyTodayLog(){
   }
 }
 
-function renderRecentList(entries){
-  const section = document.getElementById('recentSection');
-  const list = document.getElementById('recentList');
-  if(!entries || entries.length === 0){ section.style.display = 'none'; return; }
-  section.style.display = 'block';
-  list.innerHTML = entries.map(r=>{
-    const label = r.addr ? (r.name + ' — ' + r.addr) : r.name;
-    return `<div class="recentItem">✅ ${escapeHtml(label)} — ${escapeHtml(r.checkinTime || '')}</div>`;
-  }).join('');
-}
-
 function resetForNextEntry(){
   currentEntry = null;
   capturedPhotoDataUrl = null;
@@ -663,27 +698,10 @@ function resetForNextEntry(){
   document.getElementById('entrySection').scrollIntoView({behavior:'smooth', block:'start'});
 }
 
-function escapeHtml(str){
-  if(str===null||str===undefined||str==='') return "";
-  return String(str).replace(/[&<>"']/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
-}
-
 /* ---------- เริ่มทำงาน ---------- */
 (async function init(){
   const check = geoWillBeBlocked();
   document.getElementById('insecureBanner').classList.toggle('show', check.blocked);
-
-  // โชว์ชุดข้อมูลล่าสุดที่เคยโหลดสำเร็จจากเครื่องนี้ทันที ก่อนจะเริ่มคุยกับ LINE/เซิร์ฟเวอร์เลยด้วยซ้ำ —
-  // สำหรับคนที่เคยเปิดหน้านี้มาก่อน (กรณีปกติที่สุด) จะเห็นปุ่มชื่อ/ฟอร์ม/ลิสต์ "ส่งแล้ววันนี้" ขึ้นทันที
-  // ไม่ต้องรอ liff.init() หรือรอบเน็ตใดๆ เลย แล้วค่อยรีเฟรชทับเงียบๆ อีกทีเมื่อของจริงมาถึง
-  if(loadCachedRoster()){
-    renderMessengerButtons();
-    if(selectedMessenger && MESSENGERS.includes(selectedMessenger)){
-      document.getElementById('entrySection').style.display = 'block';
-      const cachedLog = loadCachedTodayLog(selectedMessenger);
-      if(cachedLog) renderRecentList(cachedLog);
-    }
-  }
 
   if(LIFF_ID && typeof liff !== 'undefined'){
     try{
