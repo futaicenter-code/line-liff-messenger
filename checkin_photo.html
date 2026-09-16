@@ -220,6 +220,36 @@ function saveGasUrl(){
   loadInitData();
 }
 
+/* ---------- แคชในเครื่อง (localStorage) เพื่อให้ "รู้สึกเปิดหน้าแล้วเร็ว" แม้ Apps Script/เน็ตมือถือ
+   จะช้าแค่ไหนก็ตาม: โชว์ข้อมูลชุดล่าสุดที่เคยโหลดสำเร็จจากเครื่องนี้ทันทีที่หน้าเปิด (ไม่ต้องรอเน็ตเลย)
+   แล้วค่อยรีเฟรชทับเงียบๆ อีกทีตอนข้อมูลจริงมาถึง — คนละเรื่องกับความเร็วเน็ต/เซิร์ฟเวอร์จริง แต่ช่วยให้
+   ไม่ต้องจ้องหน้าจอว่างเปล่ารอ (เพิ่มมา 2026-09-15 ตามที่ขอให้เปิดแล้วเห็นอะไรไวขึ้น) ---------- */
+function loadCachedRoster(){
+  try{
+    const raw = localStorage.getItem('futai_photoCheckin_rosterCache');
+    if(!raw) return false;
+    const cached = JSON.parse(raw);
+    if(Array.isArray(cached.messengers)) MESSENGERS = cached.messengers;
+    if(cached.customers && typeof cached.customers === 'object') customerDirectory = cached.customers;
+    return true;
+  }catch(e){ return false; }
+}
+function cacheRoster(){
+  try{ localStorage.setItem('futai_photoCheckin_rosterCache', JSON.stringify({ messengers: MESSENGERS, customers: customerDirectory })); }catch(e){}
+}
+function loadCachedTodayLog(name){
+  try{
+    const raw = localStorage.getItem('futai_photoCheckin_todayCache_' + name);
+    if(!raw) return null;
+    const cached = JSON.parse(raw);
+    if(cached.date !== todayStr) return null; // ข้ามวันมาแล้ว แคชเมื่อวานใช้ไม่ได้
+    return Array.isArray(cached.entries) ? cached.entries : null;
+  }catch(e){ return null; }
+}
+function cacheTodayLog(name, entries){
+  try{ localStorage.setItem('futai_photoCheckin_todayCache_' + name, JSON.stringify({ date: todayStr, entries: entries })); }catch(e){}
+}
+
 /* ---------- โหลดรายชื่อแมส + คำแนะนำลูกค้า ---------- */
 // ลองใหม่อัตโนมัติสูงสุด 2 ครั้งก่อนยอมแพ้ (retryCount) — เพราะเจอบ่อยมากว่า Apps Script เพิ่งตื่นจาก
 // cold start หรือเน็ตมือถือกระตุกชั่วคราว แล้วพอลองใหม่อีกทีก็ผ่านปกติ ไม่อยากให้แมสต้องปิดเปิดแอปเอง
@@ -227,6 +257,7 @@ function saveGasUrl(){
 async function loadInitData(retryCount){
   retryCount = retryCount || 0;
   let matchedMessenger = null;
+  let todayLogFromInit = null;
   const errBanner = document.getElementById('initErrorBanner');
   errBanner.classList.remove('show');
   try{
@@ -239,6 +270,10 @@ async function loadInitData(retryCount){
     if(Array.isArray(data.messengers)) MESSENGERS = data.messengers;
     if(data.customers && typeof data.customers === 'object') customerDirectory = data.customers;
     if(data.matchedMessenger) matchedMessenger = data.matchedMessenger;
+    // ถ้าจำได้จากบัญชี LINE อยู่แล้ว เซิร์ฟเวอร์จะแถม "ส่งแล้ววันนี้" ของคนนั้นมาในคำขอเดียวกันเลย —
+    // ไม่ต้องยิง request รอบสองไปหา Apps Script ซ้ำอีกที (ตัดเวลารอออกไปได้เกือบครึ่งสำหรับเคสที่พบบ่อยที่สุด)
+    if(Array.isArray(data.todayLog)) todayLogFromInit = data.todayLog;
+    cacheRoster();
   }catch(e){
     if(retryCount < 2){
       console.warn('load init data failed, retrying (' + (retryCount+1) + ')...', e);
@@ -260,7 +295,7 @@ async function loadInitData(retryCount){
   // สำคัญ: ต้องเรียก onMessengerChange() เสมอตอน pre-select ไม่ใช่แค่ไฮไลต์ปุ่มเฉย ๆ — ไม่งั้นขั้นที่ 2
   // (entrySection) จะไม่โผล่ให้ ทั้งที่ปุ่มไฮไลต์ไว้ให้แล้ว (บั๊กที่เจอ 2026-09-14)
   if(matchedMessenger && MESSENGERS.includes(matchedMessenger)){
-    onMessengerChange(matchedMessenger, /*fromAutoMatch=*/true);
+    onMessengerChange(matchedMessenger, /*fromAutoMatch=*/true, /*silent=*/false, /*preloadedLog=*/todayLogFromInit);
   } else if(selectedMessenger && MESSENGERS.includes(selectedMessenger)){
     onMessengerChange(selectedMessenger, /*fromAutoMatch=*/false, /*silent=*/true);
   }
@@ -317,11 +352,18 @@ document.addEventListener('click', function(e){
   if(!e.target.closest('.acWrap')) document.getElementById('customerSuggestions').classList.remove('show');
 });
 
-function onMessengerChange(name, fromAutoMatch, silent){
+function onMessengerChange(name, fromAutoMatch, silent, preloadedLog){
   selectedMessenger = name;
   try{ localStorage.setItem('futai_photoCheckin_messenger', name); }catch(e){}
   document.getElementById('entrySection').style.display = name ? 'block' : 'none';
-  loadMyTodayLog(); // โหลด "ส่งแล้ววันนี้" ของแมสคนนี้โดยเฉพาะ ทุกครั้งที่เปลี่ยน/เลือกชื่อ (รวมถึงตอนกู้ค่าเดิมกลับมาตอนเปิดหน้า)
+
+  if(Array.isArray(preloadedLog)){
+    // มากับคำขอ init รอบเดียวกันแล้ว (จำแมสคนนี้ได้จากบัญชี LINE) — ไม่ต้องยิง fetch ซ้ำรอบสองอีก
+    renderRecentList(preloadedLog);
+    cacheTodayLog(name, preloadedLog);
+  } else {
+    loadMyTodayLog(); // โหลด "ส่งแล้ววันนี้" ของแมสคนนี้โดยเฉพาะ ทุกครั้งที่เปลี่ยน/เลือกชื่อเอง (มีแคชโชว์ก่อนระหว่างรอด้วย)
+  }
 
   // ไฮไลต์ปุ่มที่เลือกอยู่ ล้างไฮไลต์ปุ่มอื่น
   document.querySelectorAll('#messengerButtons .msgBtn').forEach(b=>{
@@ -581,14 +623,18 @@ async function submitCheckin(){
 async function loadMyTodayLog(){
   const section = document.getElementById('recentSection');
   if(!selectedMessenger){ section.style.display = 'none'; return; }
+  const cached = loadCachedTodayLog(selectedMessenger);
+  if(cached) renderRecentList(cached); // โชว์ของเก่าที่เคยเห็นในเครื่องนี้ก่อนทันที ระหว่างรอของจริงจากเซิร์ฟเวอร์
   try{
     const url = buildActionUrl('myLog') + '&messenger=' + encodeURIComponent(selectedMessenger);
     const res = await fetch(url);
     if(!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
-    renderRecentList(Array.isArray(data) ? data : []);
+    const entries = Array.isArray(data) ? data : [];
+    renderRecentList(entries);
+    cacheTodayLog(selectedMessenger, entries);
   }catch(e){
-    console.error('load myLog failed', e); // ไม่ critical เท่าขั้นที่ 1 — ไม่ต้องขึ้น banner ใหญ่โต ปล่อยการ์ดนี้ว่างไปเงียบๆ พอ
+    console.error('load myLog failed', e); // ไม่ critical เท่าขั้นที่ 1 — ไม่ต้องขึ้น banner ใหญ่โต ปล่อยการ์ดนี้ว่างไปเงียบๆ พอ (ถ้ามีแคชอยู่แล้วก็ยังเห็นของเดิมค้างอยู่)
   }
 }
 
@@ -626,6 +672,18 @@ function escapeHtml(str){
 (async function init(){
   const check = geoWillBeBlocked();
   document.getElementById('insecureBanner').classList.toggle('show', check.blocked);
+
+  // โชว์ชุดข้อมูลล่าสุดที่เคยโหลดสำเร็จจากเครื่องนี้ทันที ก่อนจะเริ่มคุยกับ LINE/เซิร์ฟเวอร์เลยด้วยซ้ำ —
+  // สำหรับคนที่เคยเปิดหน้านี้มาก่อน (กรณีปกติที่สุด) จะเห็นปุ่มชื่อ/ฟอร์ม/ลิสต์ "ส่งแล้ววันนี้" ขึ้นทันที
+  // ไม่ต้องรอ liff.init() หรือรอบเน็ตใดๆ เลย แล้วค่อยรีเฟรชทับเงียบๆ อีกทีเมื่อของจริงมาถึง
+  if(loadCachedRoster()){
+    renderMessengerButtons();
+    if(selectedMessenger && MESSENGERS.includes(selectedMessenger)){
+      document.getElementById('entrySection').style.display = 'block';
+      const cachedLog = loadCachedTodayLog(selectedMessenger);
+      if(cachedLog) renderRecentList(cachedLog);
+    }
+  }
 
   if(LIFF_ID && typeof liff !== 'undefined'){
     try{
