@@ -127,6 +127,8 @@
       <button type="button" class="msgBtn" data-tag="ส่งของ" onclick="toggleNoteTag(this)">📦 ส่งของ</button>
       <button type="button" class="msgBtn" data-tag="วางบิล" onclick="toggleNoteTag(this)">🧾 วางบิล</button>
       <button type="button" class="msgBtn" data-tag="รับเช็ค" onclick="toggleNoteTag(this)">💵 รับเช็ค</button>
+      <button type="button" class="msgBtn" data-tag="ใบเสร็จ" onclick="toggleNoteTag(this)">🧻 ใบเสร็จ</button>
+      <button type="button" class="msgBtn" data-tag="เซ็นบิล" onclick="toggleNoteTag(this)">✍️ เซ็นบิล</button>
     </div>
     <button class="btn primary" style="margin-top:12px;" onclick="proceedToCapture()">ถัดไป — ถ่ายรูป</button>
   </div>
@@ -473,7 +475,7 @@ function onCustomerAddrInput(){
   addrWasAutofilled = false;
 }
 
-/* แตะติ๊ก/ยกเลิกป้ายรายละเอียดงาน (ส่งของ/วางบิล/รับเช็ค) — แทนการพิมพ์เอง เลือกได้พร้อมกันหลายอย่าง
+/* แตะติ๊ก/ยกเลิกป้ายรายละเอียดงาน (ส่งของ/วางบิล/รับเช็ค/ใบเสร็จ/เซ็นบิล) — แทนการพิมพ์เอง เลือกได้พร้อมกันหลายอย่าง
    เช่น จุดเดียวกันอาจทั้งส่งของและรับเช็คในคราวเดียว */
 function toggleNoteTag(btn){
   btn.classList.toggle('selected');
